@@ -14,15 +14,21 @@ class Toplist {
         this.updateList();
         this.listUpdater = setInterval(() => {
             this.updateList();
-        }, 5000);
+        }, 2000);
     }
     updateList() {
         window.si.processes().then(data => {
-            if (window.settings.excludeSelfFromToplist === true) {
-                data.list = data.list.filter(proc => {
-                    if (/^eDEX-UI.*/i.test(proc.name)) return false;
-                    if (proc.name === "electron" && proc.command.includes("edex-ui")) return false;
-                    return true;
+            if (window.settings.excludeThreadsFromToplist === true) {
+                data.list = data.list.sort((a, b) => {
+                		return (a.pid-b.pid);
+                }).filter((e, index, a) => {
+                		let i = a.findIndex(x => x.name === e.name);
+                		if (i !== -1 && i !== index) {
+                				a[i].pcpu = a[i].pcpu+e.pcpu;
+                				a[i].pmem = a[i].pmem+e.pmem;
+                				return false;
+                		}
+                		return true;
                 });
             }
 

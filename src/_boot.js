@@ -34,7 +34,7 @@ const ipc = electron.ipcMain;
 const path = require("path");
 const url = require("url");
 const fs = require("fs");
-const clip = require("clipboardy");
+const whereis = require("@wcjiang/whereis");
 const Terminal = require("./classes/terminal.class.js").Terminal;
 
 ipc.on("log", (e, type, content) => {
@@ -75,15 +75,18 @@ if (!fs.existsSync(settingsFile)) {
         pingAddr: "1.1.1.1",
         port: 3000,
         nointro: false,
+        nocursor: false,
         allowWindowed: false,
-        excludeSelfFromToplist: false,
+        excludeThreadsFromToplist: true,
         hideDotfiles: false,
+        fsListView: false,
         experimentalGlobeFeatures: false,
         experimentalFeatures: false
     }, 4));
 }
 
 // Copy default themes & keyboard layouts & fonts
+signale.pending("Mirroring internal assets...");
 try {
     fs.mkdirSync(themesDir);
 } catch(e) {
@@ -108,6 +111,20 @@ try {
 fs.readdirSync(innerFontsDir).forEach(e => {
     fs.writeFileSync(path.join(fontsDir, e), fs.readFileSync(path.join(innerFontsDir, e)));
 });
+
+// Version history logging
+const versionHistoryPath = path.join(electron.app.getPath("userData"), "versions_log.json");
+var versionHistory = fs.existsSync(versionHistoryPath) ? require(versionHistoryPath) : {};
+var version = app.getVersion();
+if (typeof versionHistory[version] === "undefined") {
+	versionHistory[version] = {
+		firstSeen: Date.now(),
+		lastSeen: Date.now()
+	};
+} else {
+	versionHistory[version].lastSeen = Date.now();
+}
+fs.writeFileSync(versionHistoryPath, JSON.stringify(versionHistory, 0, 2), {encoding:"utf-8"});
 
 function createWindow(settings) {
     signale.info("Creating window...");
@@ -138,6 +155,7 @@ function createWindow(settings) {
             backgroundThrottling: false,
             webSecurity: true,
             nodeIntegration: true,
+            nodeIntegrationInSubFrames: false,
             allowRunningInsecureContent: false,
             experimentalFeatures: settings.experimentalFeatures || false
         }
@@ -149,31 +167,34 @@ function createWindow(settings) {
         slashes: true
     }));
 
-    win.once("ready-to-show", () => {
-        signale.complete("Frontend window is up!");
-        win.show();
-        if (!settings.allowWindowed) {
-            win.setResizable(false);
-        }
-    });
+   	signale.complete("Frontend window created!");
+    win.show();
+    if (!settings.allowWindowed) {
+        win.setResizable(false);
+    }
 
     signale.watch("Waiting for frontend connection...");
 }
 
-app.on('ready', () => {
+app.on('ready', async () => {
     signale.pending(`Loading settings file...`);
     let settings = require(settingsFile);
+    signale.pending(`Resolving shell path...`);
+    settings.shell = await whereis(settings.shell).catch(e => { throw(e) });
+    signale.info(`Shell found at ${settings.shell}`);
     signale.success(`Settings loaded!`);
 
     if (!require("fs").existsSync(settings.cwd)) throw new Error("Configured cwd path does not exist.");
 
-    let customEnv;
-
     // See #366
-    if (process.platform === "darwin") {
-        const shellEnv = require("shell-env");
-        customEnv = shellEnv.sync();
-    }
+    let cleanEnv = await require("shell-env")(settings.shell.split(" ")[0]).catch(e => { throw e; });
+
+    Object.assign(cleanEnv, process.env, settings.env, {
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        TERM_PROGRAM: "eDEX-UI",
+        TERM_PROGRAM_VERSION: app.getVersion()
+    });
 
     signale.pending(`Creating new terminal process on port ${settings.port || '3000'}`);
     tty = new Terminal({
@@ -181,7 +202,7 @@ app.on('ready', () => {
         shell: settings.shell.split(" ")[0],
         params: settings.shell.split(" ").splice(1),
         cwd: settings.cwd,
-        env: customEnv || settings.env,
+        env: cleanEnv,
         port: settings.port || 3000
     });
     signale.success(`Terminal back-end initialized!`);
@@ -201,19 +222,6 @@ app.on('ready', () => {
         signale.error("Lost connection to frontend");
         signale.watch("Waiting for frontend connection...");
     };
-
-    // Clipboard backend access
-    ipc.on("clipboard", (e, arg) => {
-        switch(arg) {
-            case "read":
-                clip.read().then(text => {
-                    e.sender.send("clipboard-reply", text);
-                });
-                break;
-            default:
-                throw new Error("Illegal clipboard access request");
-        }
-    });
 
     // Support for multithreaded systeminformation calls
     signale.pending("Starting multithreaded calls controller...");
@@ -249,7 +257,7 @@ app.on('ready', () => {
                 shell: settings.shell.split(" ")[0],
                 params: settings.shell.split(" ").splice(1),
                 cwd: tty.tty._cwd || settings.cwd,
-                env: customEnv || settings.env,
+                env: cleanEnv,
                 port: port
             });
             signale.success(`New terminal back-end initialized at ${port}`);

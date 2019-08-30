@@ -6,6 +6,7 @@ class FilesystemDisplay {
         const path = require("path");
         this.cwd = [];
         this.iconcolor = `rgb(${window.theme.r}, ${window.theme.g}, ${window.theme.b})`;
+        this._formatBytes = (a,b) => {if(0==a)return"0 Bytes";var c=1024,d=b||2,e=["Bytes","KB","MB","GB","TB","PB","EB","ZB","YB"],f=Math.floor(Math.log(a)/Math.log(c));return parseFloat((a/Math.pow(c,f)).toFixed(d))+" "+e[f]};
         this.fileIconsMatcher = require("./assets/misc/file-icons-match.js");
         this.icons = require("./assets/icons/file-icons.json");
         this.edexIcons = {
@@ -97,6 +98,9 @@ class FilesystemDisplay {
             let num = window.currentTerm;
 
             window.term[num].oncwdchange = cwd => {
+                // See #501
+                if (this._noTracking) return false;
+
                 if (cwd && window.currentTerm === num) {
                     if (this._fsWatcher) {
                         this._fsWatcher.close();
@@ -124,11 +128,21 @@ class FilesystemDisplay {
 
         this.toggleHidedotfiles = () => {
             if (window.settings.hideDotfiles) {
-                container.setAttribute("class", "");
+                container.classList.remove("hideDotfiles");
                 window.settings.hideDotfiles = false;
             } else {
-                container.setAttribute("class", "hideDotfiles");
+                container.classList.add("hideDotfiles");
                 window.settings.hideDotfiles = true;
+            }
+        };
+
+        this.toggleListview = () => {
+            if (window.settings.fsListView) {
+                container.classList.remove("list-view");
+                window.settings.fsListView = false;
+            } else {
+                container.classList.add("list-view");
+                window.settings.fsListView = true;
             }
         };
 
@@ -179,6 +193,8 @@ class FilesystemDisplay {
                     };
 
                     if (typeof fstat !== "undefined") {
+                        e.lastAccessed = fstat.mtime;
+
                         if (fstat.isDirectory()) {
                             e.category = "dir";
                             e.type = "dir";
@@ -194,6 +210,7 @@ class FilesystemDisplay {
                         if (fstat.isFile()) {
                             e.category = "file";
                             e.type = "file";
+                            e.size = fstat.size;
                         }
                     } else {
                         e.type = "system";
@@ -296,7 +313,7 @@ class FilesystemDisplay {
                             cmd = `window.term[window.currentTerm].writelr('cd \\'${e.path.replace(/\\/g, "\\\\")}\\'')`;
                         }
                     } else {
-                        cmd = `window.term[window.currentTerm].write('\\'${e.name}\\'')`;
+                        cmd = `if(window.keyboard.container.dataset.isCtrlOn == 'true'){electron.shell.openItem('${path.resolve(this.dirpath, e.name)}');electronWin.minimize()}else{window.term[window.currentTerm].write('\\'${path.resolve(this.dirpath, e.name)}\\'')}`;
                     }
                 } else {
                     if (e.type === "dir" || e.type.endsWith("Dir")) {
@@ -306,7 +323,7 @@ class FilesystemDisplay {
                     } else if (e.type === "disk" || e.type === "rom" || e.type === "usb") {
                         cmd = `window.fsDisp.readFS('${e.path.replace(/\\/g, '\\\\')}')`;
                     } else {
-                        cmd = `window.term[window.currentTerm].write('\\'${path.resolve(this.dirpath, e.name)}\\'')`;
+                        cmd = `if(window.keyboard.container.dataset.isCtrlOn == 'true'){electron.shell.openItem('${path.resolve(this.dirpath, e.name)}');electronWin.minimize()}else{window.term[window.currentTerm].write('\\'${path.resolve(this.dirpath, e.name)}\\'')}`;
                     }
                 }
 
@@ -329,12 +346,17 @@ class FilesystemDisplay {
                 }
 
                 let icon = "";
+                let type = "";
                 switch(e.type) {
                     case "showDisks":
                         icon = this.icons.showDisks;
+                        type = "--";
+                        e.category = "showDisks";
                         break;
                     case "up":
                         icon = this.icons.up;
+                        type = "--";
+                        e.category = "up";
                         break;
                     case "symlink":
                         icon = this.icons.symlink;
@@ -350,28 +372,56 @@ class FilesystemDisplay {
                         break;
                     case "edex-theme":
                         icon = this.edexIcons.theme;
+                        type = "eDEX-UI theme";
                         break;
                     case "edex-kblayout":
                         icon = this.edexIcons.kblayout;
+                        type = "eDEX-UI keyboard layout";
                         break;
                     case "edex-settings":
+                        icon = this.edexIcons.settings;
+                        type = "eDEX-UI config file";
+                        break;
                     case "system":
                         icon = this.edexIcons.settings;
                         break;
                     case "edex-themesDir":
                         icon = this.edexIcons.themesDir;
+                        type = "eDEX-UI themes folder";
                         break;
                     case "edex-kblayoutsDir":
                         icon = this.edexIcons.kblayoutsDir;
+                        type = "eDEX-UI keyboards folder";
                         break;
                     default:
-                        icon = this.icons[this.fileIconsMatcher(e.name)];
+                        let iconName = this.fileIconsMatcher(e.name);
+                        icon = this.icons[iconName];
                         if (typeof icon === "undefined") {
                             if (e.type === "file") icon = this.icons.file;
-                            if (e.type === "dir") icon = this.icons.dir;
+                            if (e.type === "dir") {
+                                icon = this.icons.dir;
+                                type = "folder";
+                            }
                             if (typeof icon === "undefined") icon = this.icons.other;
+                        } else if (e.category !== "dir") {
+                            type = iconName.replace("icon-", "");
+                        } else {
+                            type = "special folder";
                         }
                         break;
+                }
+
+                if (type === "") type = e.type;
+
+                if (typeof e.size === "number") {
+                    e.size = this._formatBytes(e.size);
+                } else {
+                    e.size = "--";
+                }
+                if (typeof e.lastAccessed === "object") {
+                    e.lastAccessed = e.lastAccessed.toLocaleString();
+                } else {
+                    e.lastAccessed = "--";
                 }
 
                 filesDOM += `<div class="fs_disp_${e.type}${hidden} animationWait" onclick="${cmd}">
@@ -379,6 +429,9 @@ class FilesystemDisplay {
                                     ${icon.svg}
                                 </svg>
                                 <h3>${e.name}</h3>
+                                <h4>${type}</h4>
+                                <h4>${e.size}</h4>
+                                <h4>${e.lastAccessed}</h4>
                             </div>`;
             });
             this.filesContainer.innerHTML = filesDOM;
